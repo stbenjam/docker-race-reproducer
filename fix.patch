@@ -1,0 +1,41 @@
+diff --git a/vendor/github.com/docker/docker/pkg/archive/archive.go b/vendor/github.com/docker/docker/pkg/archive/archive.go
+index afb16c7..7c44db3 100644
+--- a/vendor/github.com/docker/docker/pkg/archive/archive.go
++++ b/vendor/github.com/docker/docker/pkg/archive/archive.go
+@@ -16,6 +16,7 @@ import (
+ 	"runtime"
+ 	"strconv"
+ 	"strings"
++	"sync"
+ 	"syscall"
+ 	"time"
+ 
+@@ -1218,8 +1219,13 @@ func cmdStream(cmd *exec.Cmd, input io.Reader) (io.ReadCloser, error) {
+ 		return nil, err
+ 	}
+ 
++	// Ensure the command has exited before we clean anything up
++	var wg sync.WaitGroup
++	wg.Add(1)
++
+ 	// Copy stdout to the returned pipe
+ 	go func() {
++		defer wg.Done()
+ 		if err := cmd.Wait(); err != nil {
+ 			pipeW.CloseWithError(fmt.Errorf("%s: %s", err, errBuf.String()))
+ 		} else {
+@@ -1227,7 +1233,13 @@ func cmdStream(cmd *exec.Cmd, input io.Reader) (io.ReadCloser, error) {
+ 		}
+ 	}()
+ 
+-	return pipeR, nil
++	return ioutils.NewReadCloserWrapper(pipeR, func() error {
++		// Close pipeR, and then wait for the command to complete before returning. We have to close pipeR first, as
++		// cmd.Wait waits for any non-file stdout/stderr/stdin to close.
++		err := pipeR.Close()
++		wg.Wait()
++		return err
++	}), nil
+ }
+ 
+ // NewTempArchive reads the content of src into a temporary file, and returns the contents
